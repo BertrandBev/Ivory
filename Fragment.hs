@@ -161,6 +161,61 @@ fragmentSender (MessageType baseID ide bound rep) tx = do
       callback $ const $ do
         --stores the request, which will be processed during the next callback to ("fragment_complete_" ++ idstr)
         --which means before the attempt to send the next 8-bits lumb of the buffer
+        store aborting true
+        emitV txAbort true
+
+  return (reqChan, abortChan, resChan)
+
+-- | Like fragmentSender, but provides no feedback about the success or
+-- failure of the transmission. Useful when the caller doesn't need to
+-- know whether the message made it onto the bus.
+fragmentSenderBlind :: (IvoryArea a, IvoryZero a)
+                    => ChanOutput a
+                    -> MessageType a
+                    -> AbortableTransmit (Struct "can_message") (Stored IBool)
+                    -> Tower e ()
+fragmentSenderBlind src mt tx = do
+  (fragReq, fragAbort, fragDone) <- fragmentSender mt tx
+
+  let idstr = "0x" ++ showHex (fragmentBaseID mt) ""
+  monitor ("fragment_blindly_" ++ idstr) $ do
+    msg <- state ("msg_" ++ idstr)
+    in_progress <- state ("in_progress_" ++ idstr)
+    abort_pending <- state ("abort_pending_" ++ idstr)
+
+    handler src "new_msg" $ do
+      toFrag <- emitter fragReq 1
+      doAbort <- emitter fragAbort 1
+      callback $ \ new_msg -> do
+        refCopy msg new_msg
+        was_in_progress <- deref in_progress
+        ifte_ was_in_progress (emitV doAbort true >> store abort_pending true) (emit toFrag (constRef msg) >> store in_progress true)
+
+    handler fragDone "fragment_done" $ do
+      toFrag <- emitter fragReq 1
+      callback $ const $ do
+        was_aborting <- deref abort_pending
+        when was_aborting $ do
+          emit toFrag $ constRef msg
+          store abort_pending false
+        store in_progress was_aborting
+
+data FragmentReceiveHandler = forall a. (IvoryArea a, IvoryZero a) => FragmentReceiveHandler
+  { fragmentReceiveChannel :: ChanInput a
+  , fragmentReceiveType :: MessageType a
+  }
+
+-- | Associate reassembled messages of the given type with the given
+-- channel.
+fragmentReceiveHandler :: (IvoryArea a, IvoryZero a)
+                       => ChanInput a
+                       -> MessageType a
+                       -> FragmentReceiveHandler
+fragmentReceiveHandler chan mt = FragmentReceiveHandler
+  { fragmentReceiveChannel = chan
+  , fragmentReceiveType = mt
+  }
+        
 --Structure to store the reassembled messages
 data GeneratedHandler = GeneratedHandler
   { generatedBaseID :: Int
