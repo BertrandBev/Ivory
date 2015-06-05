@@ -302,3 +302,4 @@ fragmentReceiver src handlers = do
         --the list is sorted by baseId
         let handle = cond_ . map one . sortBy (flip $ comparing generatedBaseID)
         --finally, run the previously defined handle function on the proper handle group, according to the type of the can Id b
+        ifte_ ide (handle ext) (handle std)
